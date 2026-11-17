@@ -1,7 +1,7 @@
 """Team Betelgeuse -- ball possession per frame. Rule-based dead-ball detector + sticky Viterbi.
 
-    python possession.py                     # writes evaluation/results/betelgeuse.csv
-    python evaluation/validate_submission.py evaluation/results/betelgeuse.csv
+    python possession.py                     # writes evaluation/results/Betelgeuse.csv
+    python evaluation/validate_submission.py evaluation/results/Betelgeuse.csv
 
 No training and no labels: every constant below is a football/physics prior (walking pace, control
 radius, "a controlled possession lasts about a second"), not a value fitted to the public ground

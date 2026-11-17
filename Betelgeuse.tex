@@ -1,0 +1,281 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{amsmath}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+
+\definecolor{accent}{HTML}{8A1538}
+\titleformat{\section}{\Large\bfseries\color{accent}}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{0.6em}{}
+\setlist{itemsep=2pt, topsep=4pt}
+\setlength{\parskip}{6pt}
+\setlength{\parindent}{0pt}
+\renewcommand{\arraystretch}{1.25}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+\newcommand{\code}[1]{\texttt{#1}}
+
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{\small Team Betelgeuse}
+\rhead{\small More than a Hack 2027 --- Phase 1}
+\cfoot{\small\thepage}
+\setlength{\headheight}{14pt}
+
+\title{\bfseries Ball Possession from Automatic Tracking Data\\[4pt]
+       \large A Rule-Based Dead-Ball Detector with Viterbi Possession Assignment}
+\author{Team Betelgeuse}
+\date{More than a Hack 2027, Phase 1 \textbullet{} 17 November 2026}
+
+\begin{document}
+\maketitle
+\thispagestyle{fancy}
+
+\begin{abstract}
+\noindent
+We label every frame of FC Barcelona vs Athletic Club (\code{BAR-ATH}) as home possession,
+away possession or dead ball, using a deterministic pipeline with no trained model and no labelled
+data. Dead-ball frames are found by physical rules on the provided tracking; within each live
+stretch, the team in possession is the most likely path of a two-state Viterbi decoder with a
+fixed cost for changing owner. On the public five-minute window the method scores spellF1 0.4848
+and macroF1 0.8391, above all four reference baselines. Its full-match score is unknown to us.
+\end{abstract}
+
+\section{Approach}
+
+The whole method is one file, \code{possession.py}, in two stages:
+
+\begin{enumerate}
+  \item \textbf{Dead-ball detection} by physical rules on the tracking data.
+  \item \textbf{Possession assignment} inside each live stretch by a two-state Viterbi path
+        (home / away) with a fixed cost for changing owner.
+\end{enumerate}
+
+There is no trained model. Every constant is a football or physics prior, stated in metres and
+seconds at the top of the script.
+
+\subsection{Why this and not something else}
+
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{4.2cm} l Y@{}}
+\toprule
+\textbf{Option} & \textbf{Decision} & \textbf{Reason} \\
+\midrule
+Supervised classifier (gradient boosting on distance and speed features) & Rejected &
+  It needs labels. The only labels on this match are the public five minutes, which may not be
+  used for training or tuning. We had no labelled tracking from other matches. \\
+Deep sequence model (CNN / LSTM over all tracks) & Rejected &
+  Same label problem, plus a larger need for external data. \\
+Our own detection on the video & Rejected &
+  The challenge is explicitly not a tracking problem, and the provided tracking was enough to
+  work from. \\
+Rules + Viterbi smoothing & \textbf{Chosen} &
+  Needs no labels, is fully explainable, and regenerates the identical file on every run. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+The baseline uses a centred majority vote. We replaced it with a Viterbi path because the ranking
+metric scores whole possessions: a majority vote still flickers at window edges, while a path with
+an explicit switching cost changes owner only when the evidence for the other team outweighs that
+cost. Frames with no evidence cost nothing, so the previous owner keeps the ball, which is the
+challenge's own rule for loose balls.
+
+\section{Assets used}
+
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{4.6cm} >{\raggedright\arraybackslash}p{2.6cm} Y@{}}
+\toprule
+\textbf{Asset} & \textbf{Used} & \textbf{How} \\
+\midrule
+Tactical ATD (\code{\_atd.txt}, \code{\_atd.xml}) & Yes, main input &
+  Ball position, player positions, player speeds, and the team of each track slot. \\
+Tactical Smart Tagging & Yes, weak evidence &
+  Team tag of four phase codes that describe the team with the ball: \code{BUILD UP},
+  \code{PROGRESSION}, \code{ATTACKING TRANSITION}, \code{CREATING CHANCES}. \\
+Half boundaries from \code{games.py} & Yes &
+  Frames outside the two halves are written as \code{X}. \\
+Tactical homography & No &
+  The ATD is already in pitch coordinates, so out-of-bounds is tested directly on those. \\
+Tactical and broadcast video & No & Not needed by a tracking-only method. \\
+Broadcast ATD and homography & No &
+  Not aligned to the tactical timeline; mapping it back was not worth the risk. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Tried or considered, and dropped:
+
+\begin{itemize}
+  \item \textbf{Smart Tagging \code{SET PIECES} as dead-ball markers.} In the public window their
+        start times sat several seconds away from the real restart, so they would move boundaries
+        the wrong way.
+  \item \textbf{Smart Tagging zone codes} (\code{BALL IN FINAL THIRD}, \code{PLAYERS IN THE BOX},
+        \dots). Their team tag does not reliably name the team in possession.
+  \item \textbf{Ball interpolation as a major component.} Almost all missing-ball frames are in
+        long gaps (150 gaps on graded frames, median about 11 seconds), so interpolation can only
+        bridge a tiny share. We keep a 2-second linear bridge and treat longer gaps as missing.
+\end{itemize}
+
+\section{Training data}
+
+\textbf{None.} No model is trained and no labelled dataset of any kind is used, from this match or
+any other.
+
+Use of the public five-minute ground truth, stated plainly:
+
+\begin{itemize}
+  \item We inspected it next to the tracking signals to understand what the labels mean (for
+        example, that dead-ball stretches coincide with walking-pace player speeds and long ball
+        gaps).
+  \item The constants were then written down once as round-number priors. No parameter search,
+        sweep or fitting was run against the public window.
+  \item We scored the finished pipeline on it as a correctness check (frame alignment, label
+        meaning).
+\end{itemize}
+
+\section{Possession rules implemented}
+
+All distances are in metres on the $105.3 \times 68.0$\,m pitch; all times are at 25 frames per
+second.
+
+\subsection{Dead ball (\code{D})}
+
+A frame is dead when any of these holds:
+
+\begin{itemize}
+  \item \textbf{Out of bounds:} the ball is more than 0.5\,m beyond a line.
+  \item \textbf{Lost while walking:} the ball is not tracked and the mean player speed (2-second
+        average) is below 1.7\,m/s.
+  \item \textbf{Abandoned ball:} the ball has been stationary (below 1.5\,m/s for at least
+        1 second) with no player within 3\,m. The stoppage is back-dated to the last frame a
+        player was within 2\,m, looking back at most 5 seconds.
+\end{itemize}
+
+\textbf{Restarts.} A stoppage continues through any stationary-ball stretch that begins within
+5 seconds of it (the ball being carried to the spot and placed). The restart is the end of the
+last such stretch, when the ball is played.
+
+\textbf{Clean-up.} Live play shorter than 2 seconds between two stoppages becomes dead; stoppages
+shorter than 2 seconds are removed.
+
+\textbf{Dead-ball ownership} is not predicted; the label is \code{D}.
+
+\subsection{Home / away (\code{H} / \code{A})}
+
+Let $d_H(t)$ and $d_A(t)$ be the distance from the ball to the nearest home and away player in
+frame $t$. The per-frame evidence for the home team is
+\[
+  e(t) \;=\;
+  \begin{cases}
+    \operatorname{clip}\bigl(d_A(t) - d_H(t),\,-1,\,1\bigr) & \text{if } \min(d_H, d_A) < 3\ \text{m},\\[2pt]
+    0 & \text{otherwise,}
+  \end{cases}
+  \qquad + \quad 0.1\,g(t),
+\]
+where $g(t) \in \{-1, 0, 1\}$ is the Smart Tagging possession-phase team tag. Within each live
+stretch the label sequence $s_t \in \{+1 \text{ (home)}, -1 \text{ (away)}\}$ maximises
+\[
+  \sum_t s_t\, e(t) \;-\; 30 \sum_t \mathbf{1}\bigl[s_t \neq s_{t-1}\bigr].
+\]
+
+In football terms:
+
+\begin{itemize}
+  \item \textbf{Switching.} Changing owner costs 30 units, about 1.2 seconds of clear control by
+        the other team. A touch, a deflection or a won aerial duel without follow-up does not
+        reach that.
+  \item \textbf{Loose balls, balls in flight and missing balls} give zero evidence, so possession
+        stays with the last team.
+  \item \textbf{After a restart} each live stretch is solved independently, so the first owner is
+        whoever the evidence favours, not the owner before the stoppage.
+\end{itemize}
+
+\subsection{Abstention (\code{X})}
+
+Only on ungraded frames (before kick-off, half-time, after the final whistle). Every graded frame
+gets \code{H}, \code{A} or \code{D}.
+
+\section{Results}
+
+Public five-minute window, scored with \code{python evaluation/run\_evaluation.py}:
+
+\begin{center}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Submission} & \textbf{spellF1} & \textbf{macroF1} & \textbf{Possessions (truth: 17)} \\
+\midrule
+\textbf{Betelgeuse} & \textbf{0.4848} & \textbf{0.8391} & 16 \\
+\code{baseline\_smooth125} & 0.4242 & 0.5812 & 16 \\
+\code{baseline\_smooth50}  & 0.3256 & 0.6207 & 26 \\
+\code{baseline\_smooth25}  & 0.2868 & 0.6200 & 36 \\
+\code{baseline\_raw}       & 0.0378 & 0.5972 & 131 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Whole match: 312 predicted possessions of mean 11.6\,s; label counts H 58,223, A 32,374,
+D 68,260, X 40,462. We cannot measure the full-match score ourselves, and 17 possessions is too
+small a sample to rank on.
+
+\section{Limitations}
+
+\begin{itemize}
+  \item \textbf{Whistle stoppages start late.} After a foul the ball often keeps moving, so the
+        stoppage is only detected once the ball is abandoned or lost. The preceding possession is
+        then too long.
+  \item \textbf{False stoppages in slow play.} A ball left alone for a second (a slow pass that
+        nobody attacks) can trigger the abandoned-ball rule. Two such cases appear in the public
+        window.
+  \item \textbf{Stationary ball in live play.} A goalkeeper holding the ball right after a
+        stoppage is read as part of the stoppage.
+  \item \textbf{Short possessions are missed.} Genuine possessions under about a second do not
+        overcome the switching cost.
+  \item \textbf{Long live gaps.} When the ball is missing during active play, the owner is simply
+        held, with only the Smart Tagging to correct it.
+  \item \textbf{Dead-ball share.} 43\% of graded frames are labelled dead, against 20\% in the
+        public window. That is plausible for a full match but unverified.
+  \item \textbf{One match.} The constants are priors, but they have only been exercised on this
+        game.
+\end{itemize}
+
+With more time we would: infer the ball's position from player motion during long gaps; detect
+restarts by type (throw-in at the touchline, goal kick in the six-yard box, corner) to place
+boundaries more exactly; and validate the constants on labelled tracking from other matches.
+
+\section{Reproduction}
+
+Requirements: Python 3.8 or newer with \code{numpy} and \code{pandas} (\code{requirements.txt}).
+Developed on Python 3.14, numpy 2.5.3, pandas 3.0.6.
+
+\begin{enumerate}
+  \item Unpack the data bundle into \code{data/} (or set \code{MTAH\_DATA\_DIR}). Only these files
+        in \code{data/tactical/} are read:
+        \begin{itemize}
+          \item \code{BAR-ATH\_tactical\_atd.txt}
+          \item \code{BAR-ATH\_tactical\_atd.xml}
+          \item \code{BAR-ATH\_tactical\_smart\_tagging.xml}
+        \end{itemize}
+  \item Install and run:
+\end{enumerate}
+
+\begin{verbatim}
+    pip install -r requirements.txt
+    python possession.py
+    python evaluation/validate_submission.py evaluation/results/betelgeuse.csv
+\end{verbatim}
+
+The run takes about 15 seconds and writes \code{evaluation/results/betelgeuse.csv}. There is no
+randomness, so the same data produces the same file.
+
+\end{document}
