@@ -62,3 +62,6 @@ __pycache__/
 venv/
 env/
 .DS_Store
+
+# -- external validation data (Metrica open sample games, downloaded separately) ----------------
+validation/sample-data/

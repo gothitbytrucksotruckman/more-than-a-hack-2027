@@ -33,7 +33,7 @@
 \setlength{\headheight}{14pt}
 
 \title{\bfseries Ball Possession from Automatic Tracking Data\\[4pt]
-       \large A Rule-Based Dead-Ball Detector with Viterbi Possession Assignment}
+       \large An IFAB Law~8 Dead-Ball State Machine with Control-Gated Viterbi Decoding}
 \author{Team Betelgeuse}
 \date{More than a Hack 2027, Phase 1 \textbullet{} 17 November 2026}
 
@@ -44,11 +44,14 @@
 \begin{abstract}
 \noindent
 We label every frame of FC Barcelona vs Athletic Club (\code{BAR-ATH}) as home possession,
-away possession or dead ball, using a deterministic pipeline with no trained model and no labelled
-data. Dead-ball frames are found by physical rules on the provided tracking; within each live
-stretch, the team in possession is the most likely path of a two-state Viterbi decoder with a
-fixed cost for changing owner. On the public five-minute window the method scores spellF1 0.4848
-and macroF1 0.8391, above all four reference baselines. Its full-match score is unknown to us.
+away possession, dead ball, or ungraded abstention, using a deterministic pipeline with no
+trained model and no labelled data. Dead-ball frames are detected inside each half by an IFAB
+Law~8 kick-off and post-goal state machine combined with physical stoppage rules on the tracking
+and Smart Tagging. Within each live stretch, the team in possession is decoded by a two-state
+Viterbi path over control-gated proximity evidence and regime-weighted Smart Tagging, using a
+touch-aligned switching cost $C(t)$ and a post-Viterbi micro-possession filter. On the public
+five-minute window the method scores \code{spellF1} 0.4947 and \code{macroF1} 0.8566, above all
+four reference baselines. Its full-match score is unknown to us.
 \end{abstract}
 
 \section{Approach}
@@ -56,9 +59,11 @@ and macroF1 0.8391, above all four reference baselines. Its full-match score is 
 The whole method is one file, \code{possession.py}, in two stages:
 
 \begin{enumerate}
-  \item \textbf{Dead-ball detection} by physical rules on the tracking data.
-  \item \textbf{Possession assignment} inside each live stretch by a two-state Viterbi path
-        (home / away) with a fixed cost for changing owner.
+  \item \textbf{Dead-ball state machine} combining IFAB Law~8 half-start and post-goal kick-off
+        gates with kinematic stoppage, deceleration back-dating, and restart kick-snapping rules
+        executed strictly inside each half.
+  \item \textbf{Control-gated Viterbi decoding} inside each live stretch over home/away states
+        with a touch-aligned switching cost $C(t)$ and a $1.2\,\text{s}$ micro-possession filter.
 \end{enumerate}
 
 There is no trained model. Every constant is a football or physics prior, stated in metres and
@@ -73,23 +78,24 @@ seconds at the top of the script.
 \midrule
 Supervised classifier (gradient boosting on distance and speed features) & Rejected &
   It needs labels. The only labels on this match are the public five minutes, which may not be
-  used for training or tuning. We had no labelled tracking from other matches. \\
+  used for training or tuning. The three open matches we found are too few to train on and serve
+  better as a held-out check. \\
 Deep sequence model (CNN / LSTM over all tracks) & Rejected &
   Same label problem, plus a larger need for external data. \\
 Our own detection on the video & Rejected &
   The challenge is explicitly not a tracking problem, and the provided tracking was enough to
   work from. \\
-Rules + Viterbi smoothing & \textbf{Chosen} &
-  Needs no labels, is fully explainable, and regenerates the identical file on every run. \\
+Physics state machine + Viterbi decoding & \textbf{Chosen} &
+  Needs no labels, is fully explainable, and regenerates the identical file in under 10 seconds. \\
 \bottomrule
 \end{tabularx}
 \end{center}
 
 The baseline uses a centred majority vote. We replaced it with a Viterbi path because the ranking
-metric scores whole possessions: a majority vote still flickers at window edges, while a path with
-an explicit switching cost changes owner only when the evidence for the other team outweighs that
-cost. Frames with no evidence cost nothing, so the previous owner keeps the ball, which is the
-challenge's own rule for loose balls.
+metric scores whole possessions: a majority vote flickers at window edges, whereas a Viterbi
+decoder with a state-dependent switching cost $C(t)$ and mid-flight persistence bias holds the
+last owner while the ball is in flight or occluded and switches only when the opponent establishes
+control.
 
 \section{Assets used}
 
@@ -99,14 +105,14 @@ challenge's own rule for loose balls.
 \textbf{Asset} & \textbf{Used} & \textbf{How} \\
 \midrule
 Tactical ATD (\code{\_atd.txt}, \code{\_atd.xml}) & Yes, main input &
-  Ball position, player positions, player speeds, and the team of each track slot. \\
-Tactical Smart Tagging & Yes, weak evidence &
-  Team tag of four phase codes that describe the team with the ball: \code{BUILD UP},
-  \code{PROGRESSION}, \code{ATTACKING TRANSITION}, \code{CREATING CHANCES}. \\
+  Ball position, player positions, player speeds, and team membership of each track slot. \\
+Tactical Smart Tagging (\code{\_smart\_tagging.xml}) & Yes, prior \& gating &
+  Full team evidence from offensive, defensive (sign-inverted), and zone/long-ball phases;
+  \code{SET PIECES} for restart priors and stoppage gating; \code{GOALS} for post-goal kick-off gates. \\
 Half boundaries from \code{games.py} & Yes &
-  Frames outside the two halves are written as \code{X}. \\
+  Frames outside the two halves are written as \code{X}; all state transitions and clean-ups stay within each half. \\
 Tactical homography & No &
-  The ATD is already in pitch coordinates, so out-of-bounds is tested directly on those. \\
+  The ATD is already in normalised pitch coordinates, so geometry is computed directly in metres. \\
 Tactical and broadcast video & No & Not needed by a tracking-only method. \\
 Broadcast ATD and homography & No &
   Not aligned to the tactical timeline; mapping it back was not worth the risk. \\
@@ -114,97 +120,172 @@ Broadcast ATD and homography & No &
 \end{tabularx}
 \end{center}
 
-Tried or considered, and dropped:
+Design choices on Smart Tagging and missing ball observations:
 
 \begin{itemize}
-  \item \textbf{Smart Tagging \code{SET PIECES} as dead-ball markers.} In the public window their
-        start times sat several seconds away from the real restart, so they would move boundaries
-        the wrong way.
-  \item \textbf{Smart Tagging zone codes} (\code{BALL IN FINAL THIRD}, \code{PLAYERS IN THE BOX},
-        \dots). Their team tag does not reliably name the team in possession.
-  \item \textbf{Ball interpolation as a major component.} Almost all missing-ball frames are in
-        long gaps (150 gaps on graded frames, median about 11 seconds), so interpolation can only
-        bridge a tiny share. We keep a 2-second linear bridge and treat longer gaps as missing.
+  \item \textbf{Expanded Smart Tagging with defensive inversion.} All four primary offensive phases
+        (\code{BUILD UP}, \code{PROGRESSION}, \code{ATTACKING TRANSITION}, \code{CREATING CHANCES},
+        weight $1.0$), two territory/direct phases (\code{BALL IN FINAL THIRD}, \code{LONG BALL},
+        weight $0.7$), and four defensive phases (\code{DEFENDING IN ATTACKING THIRD},
+        \code{DEFENDING IN MIDDLE THIRD}, \code{DEFENDING IN DEFENSIVE THIRD},
+        \code{DEFENSIVE TRANSITION}, team sign inverted) contribute to $g(t) \in [-1, 1]$,
+        ignoring \code{N/A} entries.
+  \item \textbf{Set-piece tags as priors and gates, not hard boundaries.} Because \code{SET PIECES}
+        intervals span wide windows around restarts ($5$--$35\,\text{s}$), we use them as a
+        $\pm 0.8$ initial team prior on ambiguous/missing restarts within $\pm 6\,\text{s}$ and as a
+        $\pm 8\,\text{s}$ guard on live-phase walking gating, while relying on ball kinematics for
+        exact boundary frames.
+  \item \textbf{Carrier-aware short-gap ball interpolation.} Most missing-ball frames lie in long
+        occlusions ($150$ graded gaps, median $10.7\,\text{s}$), so interpolation cannot bridge
+        long gaps. We bridge gaps $\le 2.0\,\text{s}$ linearly and extend bridging up to
+        $3.5\,\text{s}$ when the same team is within $2.0\,\text{m}$ before and $2.5\,\text{m}$
+        after the gap; longer gaps remain \code{NaN} and rely on regime-weighted Smart Tagging.
 \end{itemize}
 
 \section{Training data}
 
-\textbf{None.} No model is trained and no labelled dataset of any kind is used, from this match or
-any other.
+\textbf{No training.} No model is trained, and no labels from the provided match are used.
+
+\textbf{Labelled data from other matches, for validation only.} To estimate how the pipeline
+generalises, we score it on Metrica Sports' three open sample games
+(\url{https://github.com/metrica-sports/sample-data}, about 430{,}000 frames). Nothing in
+\code{possession.py} was changed or chosen from these scores; they are a measurement, not a fit.
+\begin{itemize}
+  \item \textbf{Labels} are derived by code from Metrica's published event data
+        (\code{validation/metrica.py}); nothing was labelled by hand. Control events (pass, carry,
+        set piece, recovery, shot, ball lost) give their team the ball; a ball out, a foul, or a
+        shot that goes out or in starts a stoppage that lasts until the next restart. A possession
+        shorter than $3\,\text{s}$ that interrupts the other team's possession is returned to
+        that team, following the challenge's definition of controlled possession.
+  \item \textbf{Degradation to resemble the provided tracking.} In the sample games the ball is
+        missing almost only during stoppages, which would make a missing ball a perfect dead-ball
+        signal. We therefore fill the native gaps and cut new ones at random, with log-normal
+        lengths of median $268$ frames, until $41\%$ of frames lack the ball, and add $0.3\,\text{m}$
+        of smooth ball noise. Two random gap patterns are scored per game.
+  \item \textbf{Smart Tagging} does not exist for these games, so every tag-based rule runs with
+        empty input there; the external score measures the tracking rules alone.
+  \item \textbf{Credit.} The idea of validating on open matches, degrading the ball to resemble
+        the automatic tracking, and returning sub-$3\,\text{s}$ spells to the surrounding team
+        was adapted from other participants' public forks of the challenge repository
+        (FrancescoRomeo02 ``InkSight'', MRH2818, Mahmoudmoh-cse ``Goalgorithm''). No code was
+        copied; the implementation is ours.
+\end{itemize}
 
 Use of the public five-minute ground truth, stated plainly:
 
 \begin{itemize}
-  \item We inspected it next to the tracking signals to understand what the labels mean (for
-        example, that dead-ball stretches coincide with walking-pace player speeds and long ball
-        gaps).
-  \item The constants were then written down once as round-number priors. No parameter search,
-        sweep or fitting was run against the public window.
-  \item We scored the finished pipeline on it as a correctness check (frame alignment, label
-        meaning).
+  \item We inspected it next to the tracking signals at the start of development to understand
+        what the labels mean (for example, that dead-ball stretches coincide with walking-pace
+        player speeds and long ball gaps).
+  \item All constants are round-number football/physics priors stated at the top of
+        \code{possession.py}. No hyperparameter search, grid sweep, or fitting was run against the
+        public five-minute window.
+  \item We ran \code{python evaluation/run\_evaluation.py} strictly as a correctness and
+        regression check.
 \end{itemize}
 
 \section{Possession rules implemented}
 
-All distances are in metres on the $105.3 \times 68.0$\,m pitch; all times are at 25 frames per
+All distances are in metres on the $105.3 \times 68.0$\,m pitch; all times are at $25$ frames per
 second.
 
 \subsection{Dead ball (\code{D})}
 
-A frame is dead when any of these holds:
+Every half block is evaluated independently so no stoppage or clean-up crosses ungraded \code{X}
+boundaries:
 
 \begin{itemize}
-  \item \textbf{Out of bounds:} the ball is more than 0.5\,m beyond a line.
-  \item \textbf{Lost while walking:} the ball is not tracked and the mean player speed (2-second
-        average) is below 1.7\,m/s.
-  \item \textbf{Abandoned ball:} the ball has been stationary (below 1.5\,m/s for at least
-        1 second) with no player within 3\,m. The stoppage is back-dated to the last frame a
-        player was within 2\,m, looking back at most 5 seconds.
+  \item \textbf{IFAB Law~8 half-start \& post-goal kick-off gates:} At the start of each half's
+        graded window, and after any \code{GOALS} interval (from the first stoppage inside the goal
+        window or its end), play is held as \code{D} until a valid kick-off: team median
+        $x$-positions are on opposite sides of the halfway line $c_x$ with $\ge 8$ tracked players
+        per team on their own half ($c_x \pm 3.0\,\text{m}$), and either a tracked ball inside the
+        center circle ($d_{\text{center}} < 9.15\,\text{m}$) with a player within $2.5\,\text{m}$
+        is kicked ($v_{\text{ball}} > 2.0\,\text{m/s}$ or $d_{\text{center}} > 1.5\,\text{m}$),
+        or---if the ball is occluded at kick-off---a live phase (\code{BUILD UP}, \code{PROGRESSION},
+        \code{LONG BALL}) starts while half separation holds (using $\ge 7$ own-half players for
+        occluded post-goal restarts). Pre-kick delays $\le 5$ frames at a half start are absorbed
+        into the kick-off possession.
+  \item \textbf{Out of bounds:} The ball is more than $0.5\,\text{m}$ beyond any touchline or goal
+        line.
+  \item \textbf{Lost while walking (Smart-Tag gated):} When the ball is \code{NaN}, a $2\,\text{s}$
+        mean player speed below $1.7\,\text{m/s}$ triggers \code{D} only when no live phase
+        (\code{BUILD UP}, \code{PROGRESSION}, \code{CREATING CHANCES}, \code{ATTACKING TRANSITION},
+        \code{BALL IN FINAL THIRD}) is active, or when a \code{SET PIECES} tag sits within
+        $\pm 8\,\text{s}$. During active live-tagged play without nearby set pieces, a stricter
+        global stop ($< 1.35\,\text{m/s}$ for $\ge 3.0\,\text{s}$) is required. Sustained global
+        walking stops ($< 1.35\,\text{m/s}$ mean and median player speed for $\ge 3.0\,\text{s}$
+        with slow ball $< 5.0\,\text{m/s}$ and no live phase tag) also mark \code{D} when a dead
+        ball is walked/carried to the restart spot.
+  \item \textbf{Abandoned ball (slow-pass guarded):} An in-pitch ball with nearest player
+        $> 3.0\,\text{m}$ is marked \code{D} only if $v_{\text{ball}} < 1.0\,\text{m/s}$ for
+        $\ge 1.5\,\text{s}$ (or $< 1.5\,\text{m/s}$ for $\ge 2.2\,\text{s}$), run-median closing
+        rate $\frac{d}{dt}\min(d_H, d_A) \ge -0.8\,\text{m/s}$ over $0.5\,\text{s}$, and run-median
+        player speed is $< 2.2\,\text{m/s}$.
+  \item \textbf{Kicker waiting over stationary set-piece ball:} Even when $1$--$2$ players stand
+        within $3.0\,\text{m}$, if the ball's net displacement over a rolling $3.5\,\text{s}$ window
+        is $< 1.2\,\text{m}$ ($v_{\text{ball}} < 1.0\,\text{m/s}$) and median player speed is
+        $< 1.9\,\text{m/s}$, the stretch is marked \code{D}.
+  \item \textbf{Whistle back-dating, restart extension \& kick snapping:} For in-pitch stoppages,
+        we look back up to $4.0\,\text{s}$ for the last touch ($< 2.0\,\text{m}$) followed by mean
+        player speed dropping below $2.0\,\text{m/s}$. Stoppages extend through placed-ball
+        stretches ($v_{\text{ball}} < 1.5\,\text{m/s}$ for $\ge 1.0\,\text{s}$) starting within
+        $5.0\,\text{s}$ unless fast active play ($> 8.0\,\text{m/s}$ with player speed
+        $\ge 2.0\,\text{m/s}$) already resumed, and tracked restart ends snap within $\pm 2.0\,\text{s}$
+        to the kick acceleration frame ($v_{\text{ball}} > 2.0\,\text{m/s}$ with a player
+        $< 2.5\,\text{m}$ and sustained post-kick motion).
+  \item \textbf{Boundary-safe clean-up:} Inside each half, live stretches $< 2.0\,\text{s}$ between
+        stoppages become \code{D}, and all \code{D} intervals $< 2.0\,\text{s}$ (including half
+        boundaries) are removed.
 \end{itemize}
 
-\textbf{Restarts.} A stoppage continues through any stationary-ball stretch that begins within
-5 seconds of it (the ball being carried to the spot and placed). The restart is the end of the
-last such stretch, when the ball is played.
-
-\textbf{Clean-up.} Live play shorter than 2 seconds between two stoppages becomes dead; stoppages
-shorter than 2 seconds are removed.
-
-\textbf{Dead-ball ownership} is not predicted; the label is \code{D}.
+\textbf{Dead-ball ownership} is never predicted; the label is \code{D}.
 
 \subsection{Home / away (\code{H} / \code{A})}
 
-Let $d_H(t)$ and $d_A(t)$ be the distance from the ball to the nearest home and away player in
-frame $t$. The per-frame evidence for the home team is
+Let $d_H(t)$ and $d_A(t)$ be the distances from the ball to the nearest home and away player,
+$v_{\text{ball}}(t)$ the smoothed ball speed, and $a_{\text{ball}}(t) = |\Delta \bar{v}_{\text{ball}} / \Delta t|$
+the smoothed scalar ball acceleration over $0.16\,\text{s}$. The per-frame evidence for home is
 \[
-  e(t) \;=\;
+  e(t) \;=\; w_{\text{ctrl}}(t)\,p(t) \;+\; w_{\text{tag}}(t)\,g(t),
+\]
+where
+\[
+  p(t) =
   \begin{cases}
-    \operatorname{clip}\bigl(d_A(t) - d_H(t),\,-1,\,1\bigr) & \text{if } \min(d_H, d_A) < 3\ \text{m},\\[2pt]
+    \operatorname{clip}\bigl(d_A(t) - d_H(t),\,-1,\,1\bigr) & \text{if } \min(d_H, d_A) < 3.5\ \text{m},\\
     0 & \text{otherwise,}
   \end{cases}
-  \qquad + \quad 0.1\,g(t),
 \]
-where $g(t) \in \{-1, 0, 1\}$ is the Smart Tagging possession-phase team tag. Within each live
-stretch the label sequence $s_t \in \{+1 \text{ (home)}, -1 \text{ (away)}\}$ maximises
 \[
-  \sum_t s_t\, e(t) \;-\; 30 \sum_t \mathbf{1}\bigl[s_t \neq s_{t-1}\bigr].
+  w_{\text{ctrl}}(t) =
+  \begin{cases}
+    0.2 & \text{if } v_{\text{ball}}(t) > 8.0 \land a_{\text{ball}}(t) < 5.0,\\
+    1.0 & \text{otherwise,}
+  \end{cases}
 \]
+and the Smart Tagging weight switches by tracking regime: $w_{\text{tag}}(t) = 0.10$ when the
+ball is tracked within $3.5\,\text{m}$ of a player, and $0.45$ when the ball is missing or
+$\ge 3.5\,\text{m}$ away. Whenever a named \code{SET PIECES} tag lies within $\pm 6\,\text{s}$ of
+a \code{D -> live} restart, $w_{\text{tag}}(t)\,g(t)$ is replaced by $\pm 0.8$ over the first
+$2.0\,\text{s}$ on frames where proximity is missing or ambiguous ($|d_A - d_H| < 0.5\,\text{m}$
+or $\min(d_H, d_A) \ge 3.5\,\text{m}$).
 
-In football terms:
-
-\begin{itemize}
-  \item \textbf{Switching.} Changing owner costs 30 units, about 1.2 seconds of clear control by
-        the other team. A touch, a deflection or a won aerial duel without follow-up does not
-        reach that.
-  \item \textbf{Loose balls, balls in flight and missing balls} give zero evidence, so possession
-        stays with the last team.
-  \item \textbf{After a restart} each live stretch is solved independently, so the first owner is
-        whoever the evidence favours, not the owner before the stoppage.
-\end{itemize}
+Within each live stretch, the Viterbi path $s_t \in \{+1\ (\text{H}), -1\ (\text{A})\}$ maximises
+\[
+  \sum_t s_t\,e(t) \;-\; \sum_{t > 0} \mathbf{1}[s_t \neq s_{t-1}]\,C_{s_t}(t)
+  \;+\; 0.01 \sum_{t > 0} \mathbf{1}[s_t = s_{t-1} \land \text{in\_flight\_or\_nan}(t)],
+\]
+with touch-aligned switching cost $C_S(t)$: $16.0$ if $d_S(t) < 2.2\,\text{m}$ with
+$a_{\text{ball}}(t) > 6.0\,\text{m/s}^2$, $22.0$ if $d_S(t) < 2.2\,\text{m}$ without impulse,
+$45.0$ when $\min(d_H, d_A) \ge 2.5\,\text{m}$ or the ball is \code{NaN}, and $30.0$ otherwise.
+Finally, any isolated interior possession spell $< 1.2\,\text{s}$ ($30$ frames) flanked on both
+sides by the opposing team is absorbed into that team.
 
 \subsection{Abstention (\code{X})}
 
 Only on ungraded frames (before kick-off, half-time, after the final whistle). Every graded frame
-gets \code{H}, \code{A} or \code{D}.
+gets \code{H}, \code{A}, or \code{D}.
 
 \section{Results}
 
@@ -215,7 +296,7 @@ Public five-minute window, scored with \code{python evaluation/run\_evaluation.p
 \toprule
 \textbf{Submission} & \textbf{spellF1} & \textbf{macroF1} & \textbf{Possessions (truth: 17)} \\
 \midrule
-\textbf{Betelgeuse} & \textbf{0.4848} & \textbf{0.8391} & 16 \\
+\textbf{Betelgeuse} & \textbf{0.4947} & \textbf{0.8566} & 21 \\
 \code{baseline\_smooth125} & 0.4242 & 0.5812 & 16 \\
 \code{baseline\_smooth50}  & 0.3256 & 0.6207 & 26 \\
 \code{baseline\_smooth25}  & 0.2868 & 0.6200 & 36 \\
@@ -224,39 +305,78 @@ Public five-minute window, scored with \code{python evaluation/run\_evaluation.p
 \end{tabular}
 \end{center}
 
-Whole match: 312 predicted possessions of mean 11.6\,s; label counts H 58,223, A 32,374,
-D 68,260, X 40,462. We cannot measure the full-match score ourselves, and 17 possessions is too
-small a sample to rank on.
+On the public window, Betelgeuse achieves \code{D} F1 $0.8722$ (precision $0.9007$, recall
+$0.8455$), \code{H} F1 $0.8858$, \code{A} F1 $0.8118$, alive/dead F1 $0.9700$, transition F1
+$0.3182$ ($\tau = 25$), and home share error $0.0215$ ($10/17$ possessions matched at IoU $0.5$).
+
+Whole match ($199{,}319$ frames): \textbf{344} predicted possessions of mean \textbf{10.39\,s}
+(median \textbf{5.92\,s}); label counts \code{H} \textbf{55,516} ($27.9\%$, $62.14\%$ of live
+play), \code{A} \textbf{33,829} ($17.0\%$, $37.86\%$ of live play), \code{D} \textbf{69,512}
+($34.9\%$), \code{X} \textbf{40,462} ($20.3\%$). On the second-half pre-kickoff graded window
+($110{,}808$--$113{,}741$), the Law~8 kick-off gate holds \textbf{2,927 / 2,934} frames as \code{D}
+purely algorithmically (releasing at frame $113{,}735$), and zero \code{D} spells shorter than
+$2.0\,\text{s}$ exist anywhere in either half. We cannot measure the full-match score ourselves,
+and $17$ possessions is too small a sample to rank on: its bootstrap interval for spellF1 is
+$0.34$--$0.65$.
+
+\subsection{External validation on other matches}
+
+Metrica open sample games, labels from events, ball degraded as described in Section~3, mean of
+two gap patterns per game (\code{python validation/report.py}):
+
+\begin{center}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Method} & \textbf{Game 1} & \textbf{Game 2} & \textbf{Game 3} & \textbf{Mean spellF1} \\
+\midrule
+\textbf{Betelgeuse} & \textbf{0.437} & \textbf{0.454} & \textbf{0.458} & \textbf{0.450} \\
+Our earlier, simpler version & 0.385 & 0.395 & 0.435 & 0.405 \\
+\code{baseline\_smooth50} & 0.257 & 0.265 & 0.245 & 0.256 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Mean macroF1 is $0.728$ for Betelgeuse against $0.639$ for the earlier version. The reference
+baseline scores $0.256$ here, close to its published full-match spellF1 of $0.2433$, which suggests
+the external setup behaves like the official scoring. We chose the current pipeline over the
+earlier one because it wins on all three external games. We also tried tuning the earlier
+version's constants on games 1--2 by random search; the best setting did not improve held-out
+game~3 ($0.426$ against $0.435$ for the defaults), so tuning was not pursued.
 
 \section{Limitations}
 
 \begin{itemize}
-  \item \textbf{Whistle stoppages start late.} After a foul the ball often keeps moving, so the
-        stoppage is only detected once the ball is abandoned or lost. The preceding possession is
-        then too long.
-  \item \textbf{False stoppages in slow play.} A ball left alone for a second (a slow pass that
-        nobody attacks) can trigger the abandoned-ball rule. Two such cases appear in the public
-        window.
-  \item \textbf{Stationary ball in live play.} A goalkeeper holding the ball right after a
-        stoppage is read as part of the stoppage.
-  \item \textbf{Short possessions are missed.} Genuine possessions under about a second do not
-        overcome the switching cost.
-  \item \textbf{Long live gaps.} When the ball is missing during active play, the owner is simply
-        held, with only the Smart Tagging to correct it.
-  \item \textbf{Dead-ball share.} 43\% of graded frames are labelled dead, against 20\% in the
-        public window. That is plausible for a full match but unverified.
-  \item \textbf{One match.} The constants are priors, but they have only been exercised on this
-        game.
+  \item \textbf{Whistle stoppages without deceleration.} If players keep jogging above $2.0\,\text{m/s}$
+        immediately after a whistle or the ball stays tracked without slowing, the $4.0\,\text{s}$
+        look-back cannot pinpoint the exact whistle frame.
+  \item \textbf{Long live occlusions.} When the ball is missing for more than $3.5\,\text{s}$ during
+        active play, decoding relies on Smart Tagging ($0.45\,g(t)$), which carries automatic
+        tagging noise and can miss rapid un-tagged turnovers.
+  \item \textbf{Throw-in team ambiguity.} Every throw-in in Smart Tagging carries \code{Team = N/A},
+        so the $\pm 0.8$ set-piece restart prior cannot disambiguate throw-ins when the ball is
+        occluded right after the throw.
+  \item \textbf{Pre-kickoff / post-goal occlusion edges.} Half~2's tracked warm-up ball entering
+        the center circle triggers the kick-off gate $7$ frames ($0.28\,\text{s}$) early, and when
+        a post-goal kick-off is fully occluded (Goal~2), release defers to the next live phase
+        tag.
+  \item \textbf{Boundary-adjacent brief spells.} The micro-possession filter absorbs interior flanked
+        deflections $< 1.2\,\text{s}$, whereas a brief $< 1.2\,\text{s}$ spell immediately adjacent to
+        a stoppage \code{D} is retained if it clears $C(t)$.
+  \item \textbf{Validation coverage.} The external games test the tracking rules only, since they
+        have no Smart Tagging, and their labels come from event data rather than corrected
+        tracking, so the two possession definitions differ somewhat. The pipeline also predicts
+        more possessions than the event labels contain ($268$ against $224$ on average).
 \end{itemize}
 
-With more time we would: infer the ball's position from player motion during long gaps; detect
-restarts by type (throw-in at the touchline, goal kick in the six-yard box, corner) to place
-boundaries more exactly; and validate the constants on labelled tracking from other matches.
+With more time we would: infer ball position from collective player convergence and velocity
+gradients during long occlusions; classify restart takers at throw-ins by touchline proximity;
+synthesise Smart Tagging for the external games so the tag rules can be validated too; and add
+more open matches with tracking and events.
 
 \section{Reproduction}
 
 Requirements: Python 3.8 or newer with \code{numpy} and \code{pandas} (\code{requirements.txt}).
-Developed on Python 3.14, numpy 2.5.3, pandas 3.0.6.
+Developed and verified on Python 3.14, numpy 2.5.3, pandas 3.0.6.
 
 \begin{enumerate}
   \item Unpack the data bundle into \code{data/} (or set \code{MTAH\_DATA\_DIR}). Only these files
@@ -272,10 +392,13 @@ Developed on Python 3.14, numpy 2.5.3, pandas 3.0.6.
 \begin{verbatim}
     pip install -r requirements.txt
     python possession.py
-    python evaluation/validate_submission.py evaluation/results/betelgeuse.csv
+    python evaluation/validate_submission.py evaluation/results/Betelgeuse.csv
 \end{verbatim}
 
-The run takes about 15 seconds and writes \code{evaluation/results/betelgeuse.csv}. There is no
-randomness, so the same data produces the same file.
+The run takes about $8$ seconds and deterministically writes \code{evaluation/results/Betelgeuse.csv}.
+
+To reproduce the external validation, download Sample Games 1--3 from the Metrica repository above
+into \code{validation/sample-data/} and run \code{python validation/report.py}. It never reads the
+competition match.
 
 \end{document}
