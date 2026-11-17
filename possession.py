@@ -18,7 +18,7 @@ Two stages:
      ball-player proximity (down-weighting fast straight-line passes in flight) with regime-weighted
      offensive/defensive Smart Tagging and set-piece restart priors. Switching cost C(t) is
      touch-aligned (lower on close control / acceleration impulses, high with persistence bias
-     mid-flight or occluded), followed by a micro-possession filter absorbing < 1.2 s deflections.
+     mid-flight or occluded), followed by a micro-possession filter absorbing < 2.0 s touches.
 """
 
 import os
@@ -106,7 +106,7 @@ RESTART_PRIOR = 0.80                      # initial set-piece team prior on ambi
 RESTART_PRIOR_DUR = 2 * FPS               # duration (2.0 s) of restart prior
 RESTART_TAG_REACH = 6 * FPS               # +/- 6.0 s match window for SET PIECES near restart
 
-MICRO_POSS_MIN = int(round(1.2 * FPS))    # absorb isolated flanked spells < 1.2 s (30 frames)
+MICRO_POSS_MIN = 2 * FPS                  # spells < 2.0 s are touches, not controlled possessions
 
 OFFENSIVE_CODES_FULL = {
     "BUILD UP", "PROGRESSION", "ATTACKING TRANSITION", "CREATING CHANCES"
@@ -498,7 +498,7 @@ def viterbi_two_state(evidence, cost_to_home, cost_to_away, in_flight_or_nan):
 
 
 def absorb_micro_possessions(path, min_len=MICRO_POSS_MIN):
-    """Absorb isolated < 1.2 s interior spells flanked by the opposing team into that team."""
+    """Absorb isolated < 2.0 s interior spells flanked by the opposing team into that team."""
     out = path.copy()
     while True:
         segs = []
@@ -518,6 +518,15 @@ def absorb_micro_possessions(path, min_len=MICRO_POSS_MIN):
         _, s, e, surround_team = min(interior_short)
         out[s:e] = surround_team
     return out
+
+
+def absorb_last_spell(path, min_len=MICRO_POSS_MIN):
+    """A < 2.0 s last spell before a stoppage is a touch out of play: it goes to the team before."""
+    changes = np.flatnonzero(path[1:] != path[:-1])
+    if len(changes) and len(path) - 1 - changes[-1] < min_len:
+        path = path.copy()
+        path[changes[-1] + 1:] = path[changes[-1]]
+    return path
 
 
 def nearest_set_piece_team(restart_frame, named_set_pieces):
@@ -638,7 +647,7 @@ def label_match(tracking, is_home, pitch, blocks, tags_info):
                 cost_to_away[s_abs:e_abs],
                 in_flight_or_nan[s_abs:e_abs],
             )
-            path = absorb_micro_possessions(path)
+            path = absorb_last_spell(absorb_micro_possessions(path))
             labels[s_abs:e_abs] = np.where(path == 0, "H", "A")
 
     assert len(labels) == n_frames and set(labels) <= set("HADX")

@@ -50,8 +50,9 @@ Law~8 kick-off and post-goal state machine combined with physical stoppage rules
 and Smart Tagging. Within each live stretch, the team in possession is decoded by a two-state
 Viterbi path over control-gated proximity evidence and regime-weighted Smart Tagging, using a
 touch-aligned switching cost $C(t)$ and a post-Viterbi micro-possession filter. On the public
-five-minute window the method scores \code{spellF1} 0.4947 and \code{macroF1} 0.8566, above all
-four reference baselines. Its full-match score is unknown to us.
+five-minute window the method scores \code{spellF1} 0.4533 and \code{macroF1} 0.8570, above all
+four reference baselines; on three external open matches it scores a mean \code{spellF1} of 0.466.
+Its full-match score is unknown to us.
 \end{abstract}
 
 \section{Approach}
@@ -63,7 +64,7 @@ The whole method is one file, \code{possession.py}, in two stages:
         gates with kinematic stoppage, deceleration back-dating, and restart kick-snapping rules
         executed strictly inside each half.
   \item \textbf{Control-gated Viterbi decoding} inside each live stretch over home/away states
-        with a touch-aligned switching cost $C(t)$ and a $1.2\,\text{s}$ micro-possession filter.
+        with a touch-aligned switching cost $C(t)$ and a $2.0\,\text{s}$ micro-possession filter.
 \end{enumerate}
 
 There is no trained model. Every constant is a football or physics prior, stated in metres and
@@ -148,8 +149,9 @@ Design choices on Smart Tagging and missing ball observations:
 
 \textbf{Labelled data from other matches, for validation only.} To estimate how the pipeline
 generalises, we score it on Metrica Sports' three open sample games
-(\url{https://github.com/metrica-sports/sample-data}, about 430{,}000 frames). Nothing in
-\code{possession.py} was changed or chosen from these scores; they are a measurement, not a fit.
+(\url{https://github.com/metrica-sports/sample-data}, about 430{,}000 frames). They are used to
+measure, not to fit: the only change chosen on them is the $2.0\,\text{s}$ touch rule, selected on
+games 1--2 and confirmed on held-out game~3 under the fixed protocol of Section~5.2.
 \begin{itemize}
   \item \textbf{Labels} are derived by code from Metrica's published event data
         (\code{validation/metrica.py}); nothing was labelled by hand. Control events (pass, carry,
@@ -163,7 +165,8 @@ generalises, we score it on Metrica Sports' three open sample games
         lengths of median $268$ frames, until $41\%$ of frames lack the ball, and add $0.3\,\text{m}$
         of smooth ball noise. Two random gap patterns are scored per game.
   \item \textbf{Smart Tagging} does not exist for these games, so every tag-based rule runs with
-        empty input there; the external score measures the tracking rules alone.
+        empty input in the main external scores; the tag rules are checked separately with
+        synthetic tags (Section~5.2).
   \item \textbf{Credit.} The idea of validating on open matches, degrading the ball to resemble
         the automatic tracking, and returning sub-$3\,\text{s}$ spells to the surrounding team
         was adapted from other participants' public forks of the challenge repository
@@ -279,8 +282,10 @@ Within each live stretch, the Viterbi path $s_t \in \{+1\ (\text{H}), -1\ (\text
 with touch-aligned switching cost $C_S(t)$: $16.0$ if $d_S(t) < 2.2\,\text{m}$ with
 $a_{\text{ball}}(t) > 6.0\,\text{m/s}^2$, $22.0$ if $d_S(t) < 2.2\,\text{m}$ without impulse,
 $45.0$ when $\min(d_H, d_A) \ge 2.5\,\text{m}$ or the ball is \code{NaN}, and $30.0$ otherwise.
-Finally, any isolated interior possession spell $< 1.2\,\text{s}$ ($30$ frames) flanked on both
-sides by the opposing team is absorbed into that team.
+Finally, a spell shorter than $2.0\,\text{s}$ ($50$ frames) is treated as a touch, not a
+controlled possession (the challenge defines possession as keeping the ball ``a few seconds''): an
+interior spell flanked on both sides by the opposing team is absorbed into that team, and the last
+spell before a stoppage goes to the team that had the ball before it.
 
 \subsection{Abstention (\code{X})}
 
@@ -296,7 +301,7 @@ Public five-minute window, scored with \code{python evaluation/run\_evaluation.p
 \toprule
 \textbf{Submission} & \textbf{spellF1} & \textbf{macroF1} & \textbf{Possessions (truth: 17)} \\
 \midrule
-\textbf{Betelgeuse} & \textbf{0.4947} & \textbf{0.8566} & 21 \\
+\textbf{Betelgeuse} & \textbf{0.4533} & \textbf{0.8570} & 13 \\
 \code{baseline\_smooth125} & 0.4242 & 0.5812 & 16 \\
 \code{baseline\_smooth50}  & 0.3256 & 0.6207 & 26 \\
 \code{baseline\_smooth25}  & 0.2868 & 0.6200 & 36 \\
@@ -306,18 +311,19 @@ Public five-minute window, scored with \code{python evaluation/run\_evaluation.p
 \end{center}
 
 On the public window, Betelgeuse achieves \code{D} F1 $0.8722$ (precision $0.9007$, recall
-$0.8455$), \code{H} F1 $0.8858$, \code{A} F1 $0.8118$, alive/dead F1 $0.9700$, transition F1
-$0.3182$ ($\tau = 25$), and home share error $0.0215$ ($10/17$ possessions matched at IoU $0.5$).
+$0.8455$), \code{H} F1 $0.8845$, \code{A} F1 $0.8144$, alive/dead F1 $0.9700$, transition F1
+$0.2778$ ($\tau = 25$), and home share error $0.0336$.
 
-Whole match ($199{,}319$ frames): \textbf{344} predicted possessions of mean \textbf{10.39\,s}
-(median \textbf{5.92\,s}); label counts \code{H} \textbf{55,516} ($27.9\%$, $62.14\%$ of live
-play), \code{A} \textbf{33,829} ($17.0\%$, $37.86\%$ of live play), \code{D} \textbf{69,512}
+Whole match ($199{,}319$ frames): \textbf{296} predicted possessions of mean \textbf{12.1\,s};
+label counts \code{H} \textbf{55,829} ($28.0\%$), \code{A} \textbf{33,516} ($16.8\%$), \code{D} \textbf{69,512}
 ($34.9\%$), \code{X} \textbf{40,462} ($20.3\%$). On the second-half pre-kickoff graded window
 ($110{,}808$--$113{,}741$), the Law~8 kick-off gate holds \textbf{2,927 / 2,934} frames as \code{D}
 purely algorithmically (releasing at frame $113{,}735$), and zero \code{D} spells shorter than
 $2.0\,\text{s}$ exist anywhere in either half. We cannot measure the full-match score ourselves,
 and $17$ possessions is too small a sample to rank on: its bootstrap interval for spellF1 is
-$0.34$--$0.65$.
+$0.27$--$0.64$. Before the $2.0\,\text{s}$ touch rule (Section~5.2) the public window scored
+$0.4947$ with $21$ possessions; with it, $0.4533$ with $13$. By our own protocol this window did
+not decide; Section~5.2 explains why the rule was kept.
 
 \subsection{External validation on other matches}
 
@@ -329,19 +335,54 @@ two gap patterns per game (\code{python validation/report.py}):
 \toprule
 \textbf{Method} & \textbf{Game 1} & \textbf{Game 2} & \textbf{Game 3} & \textbf{Mean spellF1} \\
 \midrule
-\textbf{Betelgeuse} & \textbf{0.437} & \textbf{0.454} & \textbf{0.458} & \textbf{0.450} \\
+\textbf{Betelgeuse (final)} & \textbf{0.456} & \textbf{0.467} & \textbf{0.475} & \textbf{0.466} \\
+Before the $2.0\,\text{s}$ touch rule & 0.437 & 0.454 & 0.458 & 0.450 \\
 Our earlier, simpler version & 0.385 & 0.395 & 0.435 & 0.405 \\
 \code{baseline\_smooth50} & 0.257 & 0.265 & 0.245 & 0.256 \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-Mean macroF1 is $0.728$ for Betelgeuse against $0.639$ for the earlier version. The reference
+Mean macroF1 is $0.729$ for the final version, $0.728$ before the touch rule, and $0.639$ for
+the earlier version. The reference
 baseline scores $0.256$ here, close to its published full-match spellF1 of $0.2433$, which suggests
 the external setup behaves like the official scoring. We chose the current pipeline over the
 earlier one because it wins on all three external games. We also tried tuning the earlier
 version's constants on games 1--2 by random search; the best setting did not improve held-out
 game~3 ($0.426$ against $0.435$ for the defaults), so tuning was not pursued.
+
+\subsection{Changes tested under a fixed protocol}
+
+Every change was chosen on external games 1--2 and confirmed on game~3, and was accepted only if it
+gained at least $0.01$ spellF1 on games 1--2, did not lower game~3, and did not lower macroF1 by
+more than $0.01$. Constants were round values fixed before results were seen; the public window was
+never used to choose. The protocol is in \code{validation/IMPROVEMENT\_PROMPT.md}.
+
+\begin{itemize}
+  \item \textbf{Accepted: $2.0\,\text{s}$ touch rule.} We predicted far more possessions than
+        the truth, mostly through short spells next to stoppages and between the other team's
+        spells. Raising the absorption window from $1.2$ to $2.0\,\text{s}$ and applying it to the
+        last spell before a stoppage improved spellF1 in all $9$ runs ($3$ games $\times$ $3$
+        random gap patterns), by $+0.012$ to $+0.017$ per game, with macroF1 unchanged. A
+        $3.0\,\text{s}$ window scored higher but was rejected: the external labels are built with a
+        $3\,\text{s}$ rule, so part of that gain would only reflect our own labelling. On the
+        public window the rule lowered the score (Section~5) and moved the possession count from
+        $21$ to $13$ against $17$; with $17$ possessions that is within noise. We kept the rule
+        because over the whole match it brings the possession rate from $5.8$ to $5.0$ per live
+        minute, still above the $4.2$ per live minute of the public ground truth, so it reduces
+        over-splitting without overshooting.
+  \item \textbf{Rejected: stoppage start at the line crossing} (the ball crosses a line, then
+        tracking loses it). $+0.002$ on games 1--2, $-0.004$ on game~3. Ball-out stoppages already
+        start on time; the late starts are fouls and offsides (median $1.4\,\text{s}$ late).
+  \item \textbf{Rejected: set-piece anchoring} (end each stoppage at the ball's still-to-moving
+        change inside a \code{SET PIECES} window). No measurable effect externally, and on BAR-ATH
+        its plain form reopened two post-goal kick-off waits as live play.
+  \item \textbf{Smart Tagging rules checked.} With synthetic Smart Tagging generated from the
+        external games' events (realistic window lengths, misses, throw-ins as \code{N/A}), our
+        tag rules add $+0.036$ spellF1 on games 1--2 and $+0.056$ on game~3, and removing any one
+        rule lowers the score. The size of the gain depends on how accurate the synthetic tags
+        are; it shrinks to $+0.005$ and $+0.012$ when $15\%$ of tags name the wrong team.
+\end{itemize}
 
 \section{Limitations}
 
@@ -359,19 +400,19 @@ game~3 ($0.426$ against $0.435$ for the defaults), so tuning was not pursued.
         the center circle triggers the kick-off gate $7$ frames ($0.28\,\text{s}$) early, and when
         a post-goal kick-off is fully occluded (Goal~2), release defers to the next live phase
         tag.
-  \item \textbf{Boundary-adjacent brief spells.} The micro-possession filter absorbs interior flanked
-        deflections $< 1.2\,\text{s}$, whereas a brief $< 1.2\,\text{s}$ spell immediately adjacent to
-        a stoppage \code{D} is retained if it clears $C(t)$.
-  \item \textbf{Validation coverage.} The external games test the tracking rules only, since they
-        have no Smart Tagging, and their labels come from event data rather than corrected
-        tracking, so the two possession definitions differ somewhat. The pipeline also predicts
-        more possessions than the event labels contain ($268$ against $224$ on average).
+  \item \textbf{Genuine short possessions.} A real possession under $2.0\,\text{s}$ is absorbed
+        into the surrounding team, and the first spell after a restart is not filtered.
+  \item \textbf{Validation coverage.} The external games have no real Smart Tagging, and their
+        labels come from event data rather than corrected tracking. Their possession definition is
+        about $15\%$ coarser than the public ground truth's ($3.6$--$3.9$ against $4.2$
+        possessions per live minute), so they slightly favour fewer possessions. The pipeline still
+        predicts more possessions than the event labels contain ($246$ against $224$ on average).
 \end{itemize}
 
 With more time we would: infer ball position from collective player convergence and velocity
 gradients during long occlusions; classify restart takers at throw-ins by touchline proximity;
-synthesise Smart Tagging for the external games so the tag rules can be validated too; and add
-more open matches with tracking and events.
+detect foul and offside stoppages earlier, where our starts lag most; and add more open matches
+with tracking and events.
 
 \section{Reproduction}
 
